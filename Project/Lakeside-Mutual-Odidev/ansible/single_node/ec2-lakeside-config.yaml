@@ -1,0 +1,66 @@
+- hosts: lakeside
+  become: True
+  tasks:
+
+  - name: Update the machine
+    command: sudo apt update -y
+
+  - name: Installing essentials
+    command: sudo apt install apt-transport-https ca-certificates curl software-properties-common -y
+
+  - name: Installing Curl
+    command: sudo apt install curl -y
+
+  - name: Installing git
+    command: sudo apt install git -y
+
+  - name: Installing Lakeside dependencices
+    command: sudo apt install docker.io docker-compose -y
+
+  - name: Cloning the repository
+    command: git clone https://github.com/Microservice-API-Patterns/LakesideMutual.git 
+
+  - name: Update IP of customer-management-frontend
+    shell: |
+      cat <<EOF> LakesideMutual/customer-management-frontend/.env
+      PORT=3020
+      REACT_APP_CUSTOMER_SELF_SERVICE_BACKEND=http://$(hostname -I | awk '{print $1}'):8080
+      REACT_APP_CUSTOMER_MANAGEMENT_BACKEND=http://$(hostname -I | awk '{print $1}'):8100
+      EOF
+
+  - name: Update IP of customer-self-serivce-frontend
+    shell: |
+      cat <<EOF> LakesideMutual/customer-self-service-frontend/.env
+      PORT=3000
+      REACT_APP_CUSTOMER_SELF_SERVICE_BACKEND=http://$(hostname -I | awk '{print $1}'):8080
+      REACT_APP_POLICY_MANAGEMENT_BACKEND=http://$(hostname -I | awk '{print $1}'):8090
+      REACT_APP_CUSTOMER_MANAGEMENT_BACKEND=http://$(hostname -I | awk '{print $1}'):8100
+      EOF
+
+  - name: Update IP of policy-management-frontend
+    shell: |
+      cat <<EOF> LakesideMutual/policy-management-frontend/.env
+      VUE_APP_POLICY_MANAGEMENT_BACKEND=http://$(hostname -I | awk '{print $1}'):8090
+      EOF
+
+  - name: Update IP of policy-management-frontend-vue
+    shell: |
+      cat <<EOF> LakesideMutual/policy-management-frontend/vue.config.js
+      module.exports = {
+      runtimeCompiler: true,
+      devServer: {
+        host: "$(hostname -I | awk '{print $1}')",
+        port: 3010
+        }
+      }
+      EOF
+
+  - name: Increase the rate limit
+    lineinfile:
+      path: LakesideMutual/customer-self-service-backend/src/main/resources/application.properties
+      regexp: '^(.*)rate.limit.perMinute(.*)$'
+      line: 'rate.limit.perMinute=100000'
+      backrefs: yes
+
+  - name: Run lakeside
+    shell: cd  LakesideMutual/ && sudo  COMPOSE_DOCKER_CLI_BUILD=1 DOCKER_BUILDKIT=1 docker-compose -f docker-compose.yml up

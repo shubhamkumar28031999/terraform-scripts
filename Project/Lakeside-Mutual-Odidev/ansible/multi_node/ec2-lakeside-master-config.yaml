@@ -1,0 +1,244 @@
+- hosts: lakesideMaster
+  become: True
+  vars:
+    - docker_username: <username>
+    - docker_password: <password>
+    - node_ip:  "<Any worker node IP>"
+
+  tasks:
+  - name: Update the machine
+    command: sudo apt update -y
+
+  - name: Installing essentials
+    command: sudo apt install docker.io docker-compose git curl -y
+
+  - name: Docker login
+    command: sudo docker login -u {{docker_username}} -p {{docker_password}}
+
+  - name: Cloning the repository
+    shell: rm -rf LakesideMutual/ && git clone https://github.com/Microservice-API-Patterns/LakesideMutual.git 
+
+  - name: Update IP of customer-management-frontend
+    shell: |
+      cat <<EOF> LakesideMutual/customer-management-frontend/.env
+      PORT=3020
+      REACT_APP_CUSTOMER_SELF_SERVICE_BACKEND=http://{{node_ip}}:8080
+      REACT_APP_CUSTOMER_MANAGEMENT_BACKEND=http://{{node_ip}}:8100
+      EOF
+
+  - name: Update IP of customer-self-serivce-frontend
+    shell: |
+      cat <<EOF> LakesideMutual/customer-self-service-frontend/.env
+      PORT=3000
+      REACT_APP_CUSTOMER_SELF_SERVICE_BACKEND=http://{{node_ip}}:8080
+      REACT_APP_POLICY_MANAGEMENT_BACKEND=http://{{node_ip}}:8090
+      REACT_APP_CUSTOMER_MANAGEMENT_BACKEND=http://{{node_ip}}:8100
+      EOF
+
+  - name: Update IP of policy-management-frontend
+    shell: |
+      cat <<EOF> LakesideMutual/policy-management-frontend/.env
+      VUE_APP_POLICY_MANAGEMENT_BACKEND=http://{{node_ip}}:8090
+      EOF
+
+  - name: Update IP of policy-management-frontend-vue
+    shell: |
+      cat <<EOF> LakesideMutual/policy-management-frontend/vue.config.js
+      module.exports = {
+      runtimeCompiler: true,
+      devServer: {
+        host: "{{node_ip}}",
+        port: 3010
+        }
+      }
+      EOF
+
+  - name: Increase the rate limit
+    lineinfile:
+      path: LakesideMutual/customer-self-service-backend/src/main/resources/application.properties
+      regexp: '^(.*)rate.limit.perMinute(.*)$'
+      line: 'rate.limit.perMinute=100000'
+      backrefs: yes
+
+  - name: docker-compose file
+    shell: |
+      cat <<EOF> LakesideMutual/docker-compose-swarm.yml
+      version: "3"
+      services:
+        spring-boot-admin:
+          build: spring-boot-admin
+          image: {{docker_username}}/spring-boot-admin
+          ports:
+            - "9000:9000"
+          networks:
+                - testservice
+          deploy:
+            placement:
+              constraints: [node.hostname != master]
+
+        customer-core:
+          build: customer-core
+          image: {{docker_username}}/customer-core
+          environment:
+            - "SPRING_BOOT_ADMIN_CLIENT_URL=http://spring-boot-admin:9000"
+          ports:
+            - "8110:8110"
+          networks:
+                - testservice
+          deploy:
+            placement:
+              constraints: [node.hostname != master]
+
+        customer-management-backend:
+          build: customer-management-backend
+          image: {{docker_username}}/customer-management-backend
+          depends_on:
+            - customer-core
+          environment:
+            - "CUSTOMERCORE_BASEURL=http://customer-core:8110"
+            - "SPRING_BOOT_ADMIN_CLIENT_URL=http://spring-boot-admin:9000"
+          ports:
+            - "8100:8100"
+          networks:
+                - testservice
+          deploy:
+            placement:
+              constraints: [node.hostname != master]
+
+        customer-management-frontend:
+          build: customer-management-frontend
+          image: {{docker_username}}/customer-management-frontend
+          depends_on:
+            - customer-management-backend
+          ports:
+            - "3020:80"
+          networks:
+                - testservice
+          deploy:
+            placement:
+              constraints: [node.hostname != master]
+
+        policy-management-backend:
+          build: policy-management-backend
+          image: {{docker_username}}/policy-management-backend
+          depends_on:
+            - customer-core
+          environment:
+            - "CUSTOMERCORE_BASEURL=http://customer-core:8110"
+            - "SPRING_BOOT_ADMIN_CLIENT_URL=http://spring-boot-admin:9000"
+          ports:
+            - "8090:8090"
+            - "61613:61613"
+            - "61616:61616"
+          networks:
+                - testservice
+          deploy:
+            placement:
+              constraints: [node.hostname != master]
+
+        policy-management-frontend:
+          build: policy-management-frontend
+          image: {{docker_username}}/policy-management-frontend
+          depends_on:
+            - policy-management-backend
+          ports:
+            - "3010:80"
+          networks:
+                - testservice
+          deploy:
+            placement:
+              constraints: [node.hostname != master]
+
+        customer-self-service-backend:
+          build: customer-self-service-backend
+          image: {{docker_username}}/customer-self-service-backend
+          depends_on:
+            - customer-core
+            - policy-management-backend
+          environment:
+            - "CUSTOMERCORE_BASEURL=http://customer-core:8110"
+            - "POLICYMANAGEMENT_TCPBROKERBINDADDRESS=tcp://policy-management-backend:61616"
+            - "SPRING_BOOT_ADMIN_CLIENT_URL=http://spring-boot-admin:9000"
+          ports:
+            - "8080:8080"
+          networks:
+                - testservice
+          deploy:
+            placement:
+              constraints: [node.hostname != master]
+
+        customer-self-service-frontend:
+          build: customer-self-service-frontend
+          image: {{docker_username}}/customer-self-service-frontend
+          depends_on:
+            - customer-self-service-backend
+            - customer-management-backend
+            - policy-management-backend
+          ports:
+            - "3000:80"
+          networks:
+                - testservice
+          deploy:
+            placement:
+              constraints: [node.hostname != master]
+
+        risk-management-server:
+          build: risk-management-server
+          image: {{docker_username}}/risk-management-server
+          depends_on:
+            - policy-management-backend
+          environment:
+            - "ACTIVEMQ_HOST=policy-management-backend"
+            - "ACTIVEMQ_PORT=61613"
+          ports:
+            - "50051:50051"
+          networks:
+                - testservice
+          deploy:
+            placement:
+              constraints: [node.hostname != master]
+      networks:
+        testservice:
+          external:
+            name: testservice
+      EOF
+
+  - name: Build docker images
+    shell: cd LakesideMutual/ && sudo COMPOSE_DOCKER_CLI_BUILD=1 DOCKER_BUILDKIT=1 docker-compose -f docker-compose.yml build
+
+  - name: Rename and push customer-management-frontend
+    shell: docker tag lakesidemutual/customer-management-frontend odidev/customer-management-frontend && docker rmi lakesidemutual/customer-management-frontend && docker push odidev/customer-management-frontend
+
+  - name: Rename and push customer-self-service-frontend
+    shell: docker tag lakesidemutual/customer-self-service-frontend odidev/customer-self-service-frontend && docker rmi lakesidemutual/customer-self-service-frontend && docker push odidev/customer-self-service-frontend
+
+  - name: Rename and push policy-management-frontend
+    shell: docker tag lakesidemutual/policy-management-frontend odidev/policy-management-frontend && docker rmi lakesidemutual/policy-management-frontend && docker push odidev/policy-management-frontend
+
+  - name: Rename and push customer-core
+    shell: docker tag lakesidemutual/customer-core odidev/customer-core && docker rmi lakesidemutual/customer-core && docker push odidev/customer-core
+
+  - name: Rename and push customer-management-backend
+    shell: docker tag lakesidemutual/customer-management-backend odidev/customer-management-backend && docker rmi lakesidemutual/customer-management-backend && docker push odidev/customer-management-backend
+
+  - name: Rename and push customer-self-service-backend
+    shell: docker tag lakesidemutual/customer-self-service-backend odidev/customer-self-service-backend && docker rmi lakesidemutual/customer-self-service-backend && docker push odidev/customer-self-service-backend
+
+  - name: Rename and push policy-management-backend
+    shell: docker tag lakesidemutual/policy-management-backend odidev/policy-management-backend && docker rmi lakesidemutual/policy-management-backend && docker push odidev/policy-management-backend
+
+  - name: Rename and push risk-management-server
+    shell: docker tag lakesidemutual/risk-management-server odidev/risk-management-server && docker rmi lakesidemutual/risk-management-server && docker push odidev/risk-management-server
+
+  - name: Rename and push spring-boot-admin
+    shell: docker tag lakesidemutual/spring-boot-admin odidev/spring-boot-admin && docker rmi lakesidemutual/spring-boot-admin && docker push odidev/spring-boot-admin
+
+  - name: Update host name
+    shell: |
+      cat <<EOF> /etc/hostname
+      master
+      EOF
+
+  - name: Update host name
+    command: sudo reboot
+    ignore_errors: true

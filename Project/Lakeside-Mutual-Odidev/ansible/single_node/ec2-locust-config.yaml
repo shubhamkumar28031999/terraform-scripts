@@ -1,0 +1,22 @@
+- hosts: locust
+  become: True
+  tasks:
+  - name: Update the machine
+    command: sudo apt update -y
+
+  - name: Installing dependencies
+    command: sudo apt install python3 python3-pip -y
+
+  - name: Installing locust
+    command:  sudo -H pip3 install locust
+
+  - name: Installing faker
+    command: sudo -H pip3 install faker
+
+  - name: Create locust directory
+    command: mkdir locust
+
+  - name: Copy the Locust scripts
+    copy:
+       src: ./../../load_test/
+       dest: ./locust/

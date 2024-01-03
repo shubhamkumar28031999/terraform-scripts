@@ -1,0 +1,19 @@
+- hosts: lakesideMaster
+  become: True
+  tasks:
+  - name: Create overlay network
+    command: docker network create -d overlay testservice
+
+  - name: Deploy Lakeside
+    shell: cd LakesideMutual/ && docker stack deploy -c docker-compose-swarm.yml lakeside
+  
+  - name: Sleep for 30 sec
+    shell: sleep 30
+
+  - name: check all docker containers are running or not
+    shell: docker stack ps lakeside
+    register: docker_containers
+
+  - name: Show docker Containers
+    debug: 
+      var: docker_containers.stdout_lines
